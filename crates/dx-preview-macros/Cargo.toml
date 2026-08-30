@@ -1,0 +1,28 @@
+[package]
+name = "dx-preview-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Procedural macros for dx-preview."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+prettyplease.workspace = true
+proc-macro-crate.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[dev-dependencies]
+dioxus = { workspace = true, features = ["lib"] }
+facade = { package = "dx-preview", path = "../dx-preview" }
+trybuild.workspace = true
+
+[lints]
+workspace = true

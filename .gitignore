@@ -1,0 +1,25 @@
+# Rust workspace build artifacts (all members share the root target/ dir).
+/target
+*.pdb
+
+# Build/test scratch.
+/.artifacts
+
+# Agent harness local state.
+/.claude/.active-transcript
+.claude/skills
+CLAUDE.local.md
+
+.superpowers/
+
+*.local.*
+
+.artifacts/
+
+/secrets/
+
+*.env
+!*.env.example
+
+/.worktrees/**
+!/.worktrees/.gitkeep

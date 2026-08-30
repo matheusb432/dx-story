@@ -1,0 +1,24 @@
+min_version = "2026.7.18"
+
+[settings]
+auto_install = false
+lockfile = true
+locked = true
+
+[tools]
+rust = { version = "1.98.0", profile = "minimal", components = [
+  "clippy",
+  "rustfmt",
+  "llvm-tools",
+] }
+just = "1.56.0"
+taplo = "0.10.0"
+"cargo-binstall" = "1.21.1"
+"cargo:cargo-llvm-cov" = { version = "0.8.7", depends = [
+  "rust",
+  "cargo-binstall",
+] }
+
+[tasks.bootstrap]
+description = "Fetch workspace dependencies"
+run = "just setup"

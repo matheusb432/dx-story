@@ -1,0 +1,5 @@
+error: duplicate preview `default` in showcase declaration
+  --> tests/ui/fail/duplicate_previews.rs:10:34
+   |
+10 | const DUPLICATE: () = &[default, default];
+   |                                  ^^^^^^^
