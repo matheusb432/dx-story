@@ -1,0 +1,12 @@
+error[E0603]: constant `STORY_VISIBLE` is private
+  --> tests/ui/fail/generated_story_is_private.rs:12:22
+   |
+12 |     let _ = stories::STORY_VISIBLE;
+   |                      ^^^^^^^^^^^^^ private constant
+   |
+note: the constant `STORY_VISIBLE` is defined here
+  --> tests/ui/fail/generated_story_is_private.rs:5:5
+   |
+ 5 |     #[story]
+   |     ^^^^^^^^
+   = note: this error originates in the attribute macro `story` (in Nightly builds, run with -Z macro-backtrace for more info)

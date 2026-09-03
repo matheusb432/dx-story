@@ -1,0 +1,5 @@
+error: duplicate story `default` in `#[stories]` declaration
+  --> tests/ui/fail/duplicate_stories.rs:10:34
+   |
+10 | const DUPLICATE: () = &[default, default];
+   |                                  ^^^^^^^

@@ -1186,19 +1186,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "dx-preview"
+name = "dx-story"
 version = "0.1.0"
 dependencies = [
  "const_format",
  "dioxus",
- "dx-preview-macros",
+ "dx-story-macros",
  "inventory",
  "pulldown-cmark",
  "web-sys",
 ]
 
 [[package]]
-name = "dx-preview-cli"
+name = "dx-story-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1215,11 +1215,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "dx-preview-macros"
+name = "dx-story-macros"
 version = "0.1.0"
 dependencies = [
  "dioxus",
- "dx-preview",
+ "dx-story",
  "prettyplease",
  "proc-macro-crate",
  "proc-macro2",

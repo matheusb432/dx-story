@@ -1,0 +1,15 @@
+error: stories requires the `id` argument
+ --> tests/ui/fail/missing_stories_arguments.rs:9:1
+  |
+9 | #[stories(name = "Missing ID")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `stories` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: stories requires the `name` argument
+  --> tests/ui/fail/missing_stories_arguments.rs:12:1
+   |
+12 | #[stories(id = "missing-name")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `stories` (in Nightly builds, run with -Z macro-backtrace for more info)

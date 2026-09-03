@@ -1,0 +1,31 @@
+[package]
+name = "dx-story-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Development commands for dx-story catalogs."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "dx-story"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+cargo_metadata.workspace = true
+clap.workspace = true
+clap-cargo.workspace = true
+command-group.workspace = true
+serde.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
