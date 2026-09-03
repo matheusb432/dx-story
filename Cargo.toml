@@ -7,7 +7,6 @@ authors = ["Matheus Bastos <matheus.mab432@gmail.com>"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/matheusb432/dx-story"
-rust-version = "1.98"
 version = "0.1.0"
 publish = false
 

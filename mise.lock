@@ -89,14 +89,6 @@ checksum = "sha256:804f5b2fe94291d0df38fd8dfc5620afbf3496f8f11c1915b42a87323234f
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/472075917"
 
-[[tools.rust]]
-version = "1.98.0"
-backend = "core:rust"
-
-[tools.rust.options]
-components = "clippy,llvm-tools,rustfmt"
-profile = "minimal"
-
 [[tools.taplo]]
 version = "0.10.0"
 backend = "aqua:tamasfe/taplo"

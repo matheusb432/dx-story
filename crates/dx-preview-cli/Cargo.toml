@@ -3,7 +3,6 @@ name = "dx-preview-cli"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 description = "Development commands for dx-preview catalogs."
 license.workspace = true
 repository.workspace = true

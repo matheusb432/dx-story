@@ -3,7 +3,6 @@ name = "dx-preview"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 description = "Dioxus component preview registry and catalog."
 license.workspace = true
 repository.workspace = true
