@@ -35,7 +35,7 @@ fn serve_rejects_an_invalid_project_configuration() {
         .arg("serve")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("load dx-story.toml"));
+        .stderr(predicate::str::contains("dx-story.toml"));
 }
 
 #[test]

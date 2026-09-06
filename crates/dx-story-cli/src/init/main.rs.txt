@@ -1,0 +1,5 @@
+mod stories;
+
+fn main() -> Result<(), dx_story::RegistryError> {
+    dx_story::catalog::launch(dx_story::catalog::CatalogConfig::default())
+}

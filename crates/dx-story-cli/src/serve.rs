@@ -2,38 +2,49 @@ use std::{
     collections::BTreeSet,
     ffi::OsString,
     fs::{self, File, OpenOptions},
+    io::{IsTerminal, Read, Write},
+    net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus},
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
-use cargo_metadata::MetadataCommand;
 use clap::Args;
-#[cfg(unix)]
-use command_group::{Signal, UnixChildExt};
 use walkdir::WalkDir;
 
-use crate::config::{Configuration, OpenBrowser};
-
-const SOURCE_DIRECTORY_COUNT_MAX: usize = 64;
-const FEATURE_COUNT_MAX: usize = 64;
-const SOURCE_ENTRY_COUNT_MAX: usize = 10_000;
-const SOURCE_DEPTH_MAX: usize = 64;
-const DEVELOPMENT_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const DEVELOPMENT_STOP_GRACE_PERIOD: Duration = Duration::from_secs(2);
-const WEB_ASSET_LOCK_FILE: &str = "web-assets.lock";
+use crate::{
+    config::OpenBrowser,
+    doctor,
+    process::{self, ManagedProcess, POLL_INTERVAL},
+    project::CatalogProject,
+};
 
 #[derive(Args, Debug)]
 pub(crate) struct ServeArguments {
-    /// Port to serve on.
-    #[arg(short, long)]
+    /// Port to serve on (configuration default: 8080).
+    #[arg(short, long, value_parser = clap::value_parser!(u16).range(1..))]
     port: Option<u16>,
     /// Open the browser when the server starts.
     #[arg(short, long, num_args = 0..=1, default_missing_value = "yes")]
     open: Option<OpenBrowser>,
-    /// Arguments passed to `dx serve`.
+    /// Address to listen on.
+    #[arg(long, default_value = "127.0.0.1")]
+    addr: Ipv4Addr,
+    /// Disable Rust and stylesheet watchers and hot reload.
+    #[arg(long)]
+    no_watch: bool,
+    /// Disable the Dioxus terminal interface.
+    #[arg(long)]
+    non_interactive: bool,
+    /// Emit one JSON ready event on stdout; send all child output to stderr.
+    #[arg(long)]
+    ready_json: bool,
+    /// Maximum seconds to wait for an HTTP-ready catalog after starting Dioxus.
+    #[arg(long, default_value = "300", value_parser = clap::value_parser!(u64).range(1..=3600))]
+    ready_timeout: u64,
+    /// Additional arguments passed to `dx serve` after `--`.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
@@ -42,295 +53,241 @@ pub(crate) struct ServeArguments {
     arguments: Vec<OsString>,
 }
 
-pub(crate) fn run(configuration: Configuration, arguments: &ServeArguments) -> Result<()> {
-    let project = CatalogProject::try_from(configuration)?;
-    let mut known_sources = rust_sources(&project.source_directories)?;
-
-    build_project_styles(&project)?;
-    let _tailwind_watcher = DevelopmentWatcher::spawn(&project.tailwind_command(true))?;
-    let server = project.dioxus_serve_command(arguments);
-
-    while let Some(current_sources) = run_server_until_source_change(
-        &server,
-        &project.catalog_path,
-        &project.source_directories,
-        &known_sources,
-    )? {
-        known_sources = current_sources;
-    }
-    Ok(())
-}
-
-pub(crate) fn build_styles(configuration: Configuration) -> Result<()> {
-    build_project_styles(&CatalogProject::try_from(configuration)?)
-}
-
-fn build_project_styles(project: &CatalogProject) -> Result<()> {
-    let _lock = WebAssetLock::acquire(&project.catalog_path)?;
-    run_process(&project.tailwind_command(false))
-}
-
-struct CatalogProject {
-    catalog_path: PathBuf,
-    package: String,
-    example: String,
-    features: Vec<String>,
-    default_features: bool,
-    locked: bool,
-    source_directories: Vec<PathBuf>,
-    tailwind_input: PathBuf,
-    tailwind_output: PathBuf,
-    serve_port: u16,
-    serve_open: OpenBrowser,
-}
-
-impl TryFrom<Configuration> for CatalogProject {
-    type Error = anyhow::Error;
-
-    fn try_from(configuration: Configuration) -> Result<Self> {
-        let catalog_path = configuration.root.join(configuration.catalog.path);
-        ensure!(
-            catalog_path.is_dir(),
-            "configured catalog path is not a directory: {}",
-            catalog_path.display()
-        );
-        ensure!(
-            catalog_path.join("Cargo.toml").is_file(),
-            "configured catalog path has no Cargo.toml: {}",
-            catalog_path.display()
-        );
-        ensure!(
-            !configuration.catalog.package.trim().is_empty(),
-            "configured catalog package is empty"
-        );
-        ensure!(
-            !configuration.catalog.example.trim().is_empty(),
-            "configured catalog example is empty"
-        );
-        ensure!(
-            configuration.catalog.features.len() <= FEATURE_COUNT_MAX
-                && configuration
-                    .catalog
-                    .features
-                    .iter()
-                    .all(|feature| !feature.trim().is_empty()),
-            "configured catalog features are invalid"
-        );
-        ensure!(
-            !configuration.catalog.source_directories.is_empty()
-                && configuration.catalog.source_directories.len() <= SOURCE_DIRECTORY_COUNT_MAX,
-            "configured source directory count must be between 1 and {SOURCE_DIRECTORY_COUNT_MAX}"
-        );
-        ensure!(
-            !configuration.tailwind.input.as_os_str().is_empty(),
-            "configured Tailwind input is empty"
-        );
-        ensure!(
-            !configuration.tailwind.output.as_os_str().is_empty(),
-            "configured Tailwind output is empty"
-        );
-
-        let source_directories = configuration
-            .catalog
-            .source_directories
-            .into_iter()
-            .map(|directory| catalog_path.join(directory))
-            .collect();
-
-        Ok(Self {
-            catalog_path,
-            package: configuration.catalog.package,
-            example: configuration.catalog.example,
-            features: configuration.catalog.features,
-            default_features: configuration.catalog.default_features,
-            locked: configuration.catalog.locked,
-            source_directories,
-            tailwind_input: configuration.tailwind.input,
-            tailwind_output: configuration.tailwind.output,
-            serve_port: configuration.serve.port,
-            serve_open: configuration.serve.open,
-        })
-    }
-}
-
-impl CatalogProject {
-    fn tailwind_command(&self, watch: bool) -> ProcessSpec {
-        let mut arguments = vec![
-            "run".into(),
-            "--frozen".into(),
-            "--allow-all".into(),
-            "@tailwindcss/cli".into(),
-            "--input".into(),
-            self.tailwind_input.as_os_str().to_owned(),
-            "--output".into(),
-            self.tailwind_output.as_os_str().to_owned(),
-            "--minify".into(),
-        ];
-        if watch {
-            arguments.extend(["--watch=always".into(), "--poll=100".into()]);
-        }
-
-        ProcessSpec::new("dx-story-tailwind", "deno", arguments, &self.catalog_path)
-    }
-
-    fn dioxus_serve_command(&self, overrides: &ServeArguments) -> ProcessSpec {
-        let mut arguments = vec![
-            "serve".into(),
-            "--web".into(),
-            "--package".into(),
-            self.package.clone().into(),
-            "--example".into(),
-            self.example.clone().into(),
-        ];
-        if !self.default_features {
-            arguments.push("--no-default-features".into());
-        }
-        if !self.features.is_empty() {
-            arguments.extend(["--features".into(), self.features.join(",").into()]);
-        }
-        if self.locked {
-            arguments.push("--locked".into());
-        }
-        arguments.extend([
-            "--hot-reload".into(),
-            "true".into(),
-            "--watch".into(),
-            "true".into(),
-            "--port".into(),
-            overrides.port.unwrap_or(self.serve_port).to_string().into(),
-            "--open".into(),
-            overrides
-                .open
-                .unwrap_or(self.serve_open)
-                .as_bool()
-                .to_string()
-                .into(),
-        ]);
-        arguments.extend(overrides.arguments.iter().cloned());
-
-        ProcessSpec::new("dx-story-serve", "dx", arguments, &self.catalog_path)
-            .with_environment("CARGO_INCREMENTAL", "1")
-            .with_environment("RUSTC_WRAPPER", "")
-    }
-}
-
-struct ProcessSpec {
-    label: &'static str,
-    program: &'static str,
-    arguments: Vec<OsString>,
-    environment: Vec<(&'static str, &'static str)>,
-    current_directory: PathBuf,
-}
-
-impl ProcessSpec {
-    fn new(
-        label: &'static str,
-        program: &'static str,
-        arguments: Vec<OsString>,
-        current_directory: &Path,
-    ) -> Self {
-        Self {
-            label,
-            program,
-            arguments,
-            environment: Vec::new(),
-            current_directory: current_directory.to_owned(),
-        }
-    }
-
-    fn with_environment(mut self, key: &'static str, value: &'static str) -> Self {
-        self.environment.push((key, value));
-        self
-    }
-
-    fn command(&self) -> Command {
-        let mut command = Command::new(self.program);
-        command
-            .args(&self.arguments)
-            .envs(self.environment.iter().copied())
-            .current_dir(&self.current_directory);
-        command
-    }
-}
-
-fn run_process(specification: &ProcessSpec) -> Result<()> {
-    let status = specification
-        .command()
-        .status()
-        .with_context(|| format!("start {}", specification.label))?;
-    ensure!(
-        status.success(),
-        "{} failed (exit {})",
-        specification.label,
-        status.code().unwrap_or(-1)
+pub(crate) fn run(project: &CatalogProject, arguments: &ServeArguments) -> Result<()> {
+    validate_forwarded_arguments(arguments)?;
+    doctor::check(project)?;
+    let port = arguments.port.unwrap_or(project.serve().port);
+    let address = SocketAddrV4::new(arguments.addr, port);
+    drop(
+        TcpListener::bind(address)
+            .with_context(|| format!("catalog address {address} is unavailable"))?,
     );
-    Ok(())
-}
-
-fn run_server_until_source_change(
-    specification: &ProcessSpec,
-    catalog_path: &Path,
-    source_directories: &[PathBuf],
-    known_sources: &BTreeSet<PathBuf>,
-) -> Result<Option<BTreeSet<PathBuf>>> {
-    let mut server = DevelopmentServer::spawn(specification)?;
+    let _lock = project
+        .tailwind()
+        .map(|_| WebAssetLock::acquire(project.target_directory()))
+        .transpose()?;
+    build_styles_unlocked(project)?;
+    let mut watcher = if arguments.no_watch {
+        None
+    } else {
+        tailwind_command(project, true)
+            .map(|mut command| ManagedProcess::spawn(&mut command, "Tailwind watcher"))
+            .transpose()?
+    };
+    let mut known_sources = if arguments.no_watch {
+        BTreeSet::new()
+    } else {
+        rust_sources(project.source_directories())?
+    };
+    let mut server = spawn_server(project, arguments)?;
+    let mut deadline = Instant::now() + Duration::from_secs(arguments.ready_timeout);
+    let mut ready = false;
     loop {
+        if process::stopping() {
+            return Ok(());
+        }
+        if let Some(watcher) = &mut watcher {
+            watcher.require_running()?;
+        }
         if let Some(status) = server.try_wait()? {
             ensure!(
-                status.success(),
-                "{} failed (exit {})",
-                specification.label,
-                status.code().unwrap_or(-1)
+                status.success() && ready,
+                "Dioxus server exited (exit {status}; ready: {ready})"
             );
-            return Ok(None);
+            return Ok(());
         }
-
-        let current_sources = rust_sources(source_directories)?;
-        let new_sources = new_rust_sources(known_sources, &current_sources);
-        if new_sources.is_empty() {
-            thread::sleep(DEVELOPMENT_POLL_INTERVAL);
-            continue;
+        if !ready {
+            ready = poll_ready(address, deadline, arguments)?;
         }
-
-        let paths = new_sources
-            .iter()
-            .map(|path| {
-                path.strip_prefix(catalog_path)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        eprintln!("dx-story: restarting Dioxus to register new Rust source: {paths}");
-        server.stop()?;
-        return Ok(Some(current_sources));
+        if let Some(sources) = changed_sources(project, arguments, &known_sources)? {
+            known_sources = sources;
+            eprintln!("dx-story: restarting Dioxus after Rust source files were added or removed");
+            server.stop()?;
+            server = spawn_server(project, arguments)?;
+            deadline = Instant::now() + Duration::from_secs(arguments.ready_timeout);
+            ready = false;
+        }
+        thread::sleep(POLL_INTERVAL);
     }
 }
 
-fn rust_sources(source_directories: &[PathBuf]) -> Result<BTreeSet<PathBuf>> {
-    let mut entry_count = 0;
+fn spawn_server(project: &CatalogProject, arguments: &ServeArguments) -> Result<ManagedProcess> {
+    let mut server =
+        ManagedProcess::spawn(&mut dioxus_command(project, arguments), "Dioxus server")?;
+    if !arguments.non_interactive && !arguments.ready_json && std::io::stdin().is_terminal() {
+        server.take_terminal()?;
+    }
+    Ok(server)
+}
+
+fn changed_sources(
+    project: &CatalogProject,
+    arguments: &ServeArguments,
+    known: &BTreeSet<PathBuf>,
+) -> Result<Option<BTreeSet<PathBuf>>> {
+    if arguments.no_watch {
+        return Ok(None);
+    }
+    let sources = rust_sources(project.source_directories())?;
+    Ok((sources != *known).then_some(sources))
+}
+
+fn poll_ready(
+    address: SocketAddrV4,
+    deadline: Instant,
+    arguments: &ServeArguments,
+) -> Result<bool> {
+    if !catalog_responds(address) {
+        ensure!(
+            Instant::now() < deadline,
+            "catalog did not become HTTP-ready within {} seconds",
+            arguments.ready_timeout
+        );
+        return Ok(false);
+    }
+    let url = format!("http://{address}");
+    if arguments.ready_json {
+        println!("{}", serde_json::json!({"event": "ready", "url": url}));
+        std::io::stdout().flush().context("flush readiness event")?;
+    } else {
+        eprintln!("dx-story: ready at {url}");
+    }
+    Ok(true)
+}
+
+fn validate_forwarded_arguments(arguments: &ServeArguments) -> Result<()> {
+    if arguments.ready_json || arguments.no_watch {
+        for argument in &arguments.arguments {
+            let value = argument.to_string_lossy();
+            let flag = value.split('=').next().unwrap_or_default();
+            ensure!(
+                !matches!(
+                    flag,
+                    "--port"
+                        | "-p"
+                        | "--addr"
+                        | "--watch"
+                        | "--hot-reload"
+                        | "--interactive"
+                        | "--open"
+                ),
+                "{flag} cannot be forwarded with --ready-json or --no-watch; use dx-story's serve options"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn build_styles(project: &CatalogProject) -> Result<()> {
+    ensure!(
+        project.tailwind().is_some(),
+        "this catalog has no [tailwind] configuration; no stylesheet build is needed"
+    );
+    let _lock = WebAssetLock::acquire(project.target_directory())?;
+    build_styles_unlocked(project)
+}
+
+fn build_styles_unlocked(project: &CatalogProject) -> Result<()> {
+    if let Some(mut command) = tailwind_command(project, false) {
+        process::run(&mut command, "Tailwind build", Duration::from_secs(120))?;
+    }
+    Ok(())
+}
+
+fn tailwind_command(project: &CatalogProject, watch: bool) -> Option<Command> {
+    let tailwind = project.tailwind()?;
+    let mut command = Command::new("deno");
+    command
+        .args([
+            "run",
+            "--frozen",
+            "--allow-all",
+            "@tailwindcss/cli",
+            "--input",
+        ])
+        .arg(&tailwind.input)
+        .arg("--output")
+        .arg(&tailwind.output)
+        .arg("--minify")
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if watch {
+        command.args(["--watch=always", "--poll=100"]);
+    }
+    command.stdout(std::io::stderr());
+    Some(command)
+}
+
+fn dioxus_command(project: &CatalogProject, overrides: &ServeArguments) -> Command {
+    let mut command = Command::new("dx");
+    command.arg("serve").args(project.target_arguments()).args([
+        "--hot-reload",
+        &(!overrides.no_watch).to_string(),
+        "--watch",
+        &(!overrides.no_watch).to_string(),
+        "--port",
+        &overrides.port.unwrap_or(project.serve().port).to_string(),
+        "--addr",
+        &overrides.addr.to_string(),
+        "--open",
+        &overrides
+            .open
+            .unwrap_or(project.serve().open)
+            .as_bool()
+            .to_string(),
+    ]);
+    if overrides.non_interactive || overrides.ready_json {
+        command
+            .args(["--interactive", "false"])
+            .stdin(Stdio::null());
+    }
+    if overrides.ready_json {
+        command.stdout(std::io::stderr());
+    }
+    command
+        .args(&overrides.arguments)
+        .current_dir(project.path())
+        .env(
+            "CARGO_INCREMENTAL",
+            if overrides.no_watch { "0" } else { "1" },
+        )
+        .env("RUSTC_WRAPPER", "");
+    command
+}
+
+fn rust_sources(directories: &[PathBuf]) -> Result<BTreeSet<PathBuf>> {
     let mut sources = BTreeSet::new();
-    for directory in source_directories {
-        collect_rust_sources(directory, &mut entry_count, &mut sources)?;
+    let mut count = 0;
+    for directory in directories {
+        collect_sources(directory, &mut count, &mut sources)?;
     }
     Ok(sources)
 }
 
-fn collect_rust_sources(
+fn collect_sources(
     directory: &Path,
-    entry_count: &mut usize,
+    count: &mut usize,
     sources: &mut BTreeSet<PathBuf>,
 ) -> Result<()> {
     for entry in WalkDir::new(directory)
         .follow_links(false)
-        .max_depth(SOURCE_DEPTH_MAX)
+        .max_depth(64)
+        .into_iter()
+        .filter_entry(|entry| {
+            !entry.file_type().is_dir()
+                || !matches!(
+                    entry.file_name().to_str(),
+                    Some("target" | "node_modules" | ".git" | "dist" | ".cache")
+                )
+        })
     {
         let entry = entry.with_context(|| format!("inventory {}", directory.display()))?;
-        *entry_count += 1;
+        *count += 1;
         ensure!(
-            *entry_count <= SOURCE_ENTRY_COUNT_MAX,
-            "Dioxus source inventory exceeds {SOURCE_ENTRY_COUNT_MAX} entries"
+            *count <= 100_000,
+            "Dioxus source inventory exceeds 100000 entries"
         );
         if entry.file_type().is_file()
             && entry
@@ -344,275 +301,71 @@ fn collect_rust_sources(
     Ok(())
 }
 
-fn new_rust_sources(known: &BTreeSet<PathBuf>, current: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
-    current.difference(known).cloned().collect()
-}
-
-struct DevelopmentServer {
-    label: &'static str,
-    child: Child,
-}
-
-impl DevelopmentServer {
-    fn spawn(specification: &ProcessSpec) -> Result<Self> {
-        let child = specification
-            .command()
-            .spawn()
-            .with_context(|| format!("start {}", specification.label))?;
-        Ok(Self {
-            label: specification.label,
-            child,
-        })
+fn catalog_responds(mut address: SocketAddrV4) -> bool {
+    if address.ip().is_unspecified() {
+        address.set_ip(Ipv4Addr::LOCALHOST);
     }
-
-    fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        self.child
-            .try_wait()
-            .with_context(|| format!("poll {} process", self.label))
+    let Ok(mut connection) = TcpStream::connect_timeout(&address.into(), POLL_INTERVAL) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_millis(250));
+    if connection.set_read_timeout(timeout).is_err()
+        || connection.set_write_timeout(timeout).is_err()
+    {
+        return false;
     }
-
-    fn stop(&mut self) -> Result<()> {
-        if self.try_wait()?.is_some() {
-            return Ok(());
-        }
-
-        self.request_stop()?;
-        let deadline = Instant::now() + DEVELOPMENT_STOP_GRACE_PERIOD;
-        while Instant::now() < deadline && self.try_wait()?.is_none() {
-            thread::sleep(DEVELOPMENT_POLL_INTERVAL);
-        }
-        if self.try_wait()?.is_some() {
-            return Ok(());
-        }
-        if let Err(error) = self.child.kill()
-            && self.try_wait()?.is_none()
-        {
-            return Err(error).with_context(|| format!("kill {} process", self.label));
-        }
-        self.child
-            .wait()
-            .with_context(|| format!("reap {} process", self.label))?;
-        Ok(())
+    if connection
+        .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\nAccept: text/html\r\n\r\n")
+        .is_err()
+    {
+        return false;
     }
-
-    #[cfg(unix)]
-    fn request_stop(&mut self) -> Result<()> {
-        if let Err(error) = self.child.signal(Signal::SIGINT)
-            && self.try_wait()?.is_none()
-        {
-            return Err(error).with_context(|| format!("stop {} process", self.label));
-        }
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn request_stop(&mut self) -> Result<()> {
-        if let Err(error) = self.child.kill()
-            && self.try_wait()?.is_none()
-        {
-            return Err(error).with_context(|| format!("stop {} process", self.label));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for DevelopmentServer {
-    fn drop(&mut self) {
-        if let Err(error) = self.stop() {
-            eprintln!(
-                "{}: failed to stop development server: {error:#}",
-                self.label
-            );
-        }
-    }
-}
-
-struct DevelopmentWatcher {
-    label: &'static str,
-    child: Child,
-}
-
-impl DevelopmentWatcher {
-    fn spawn(specification: &ProcessSpec) -> Result<Self> {
-        let child = specification
-            .command()
-            .spawn()
-            .with_context(|| format!("start {}", specification.label))?;
-        Ok(Self {
-            label: specification.label,
-            child,
-        })
-    }
-}
-
-impl Drop for DevelopmentWatcher {
-    fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none()
-            && let Err(error) = self.child.kill()
-        {
-            eprintln!("{}: failed to stop watcher: {error}", self.label);
-        }
-        if let Err(error) = self.child.wait() {
-            eprintln!("{}: failed to reap watcher: {error}", self.label);
-        }
-    }
+    let mut response = String::new();
+    connection
+        .take(1024 * 1024)
+        .read_to_string(&mut response)
+        .is_ok()
+        && (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
+        && response.contains("</html>")
+        && !response.contains("We're building your app now")
 }
 
 struct WebAssetLock(File);
 
 impl WebAssetLock {
-    fn acquire(catalog_path: &Path) -> Result<Self> {
-        let target_directory = MetadataCommand::new()
-            .manifest_path(catalog_path.join("Cargo.toml"))
-            .current_dir(catalog_path)
-            .other_options(vec!["--locked".to_owned()])
-            .exec()
-            .context("resolve the Cargo target directory")?
-            .target_directory
-            .into_std_path_buf();
-        let path = target_directory.join(WEB_ASSET_LOCK_FILE);
-        fs::create_dir_all(path.parent().context("catalog asset lock has no parent")?)
-            .with_context(|| format!("create lock parent for {}", path.display()))?;
+    fn acquire(target: &Path) -> Result<Self> {
+        fs::create_dir_all(target).context("create Cargo target directory")?;
+        let path = target.join("web-assets.lock");
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
             .open(&path)
-            .with_context(|| format!("open web asset lock {}", path.display()))?;
-        file.lock()
-            .with_context(|| format!("acquire web asset lock {}", path.display()))?;
+            .context("open web asset lock")?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !try_asset_lock(&file)? {
+            ensure!(
+                !process::stopping() && Instant::now() < deadline,
+                "web assets are busy; stop the other preview server or stylesheet build ({})",
+                path.display()
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
         Ok(Self(file))
+    }
+}
+
+fn try_asset_lock(file: &File) -> Result<bool> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(error) => Err(error).context("lock web assets"),
     }
 }
 
 impl Drop for WebAssetLock {
     fn drop(&mut self) {
-        if let Err(error) = self.0.unlock() {
-            eprintln!("failed to release web asset lock: {error}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{CatalogConfiguration, ServeConfiguration, TailwindConfiguration};
-
-    fn configuration(project: &Path) -> Configuration {
-        let catalog_path = project.join("catalog");
-        fs::create_dir_all(catalog_path.join("src")).unwrap();
-        fs::create_dir_all(catalog_path.join("dev")).unwrap();
-        fs::write(
-            catalog_path.join("Cargo.toml"),
-            "[package]\nname='fixture'\nversion='0.1.0'\n",
-        )
-        .unwrap();
-
-        Configuration {
-            root: project.to_owned(),
-            catalog: CatalogConfiguration {
-                path: PathBuf::from("catalog"),
-                package: "fixture-ui".to_owned(),
-                example: "component-catalog".to_owned(),
-                features: vec!["component-catalog".to_owned()],
-                default_features: false,
-                locked: true,
-                source_directories: vec!["src".into(), "dev".into()],
-            },
-            serve: ServeConfiguration {
-                port: 8080,
-                open: OpenBrowser::No,
-            },
-            tailwind: TailwindConfiguration {
-                input: "dev/tailwind.css".into(),
-                output: "assets/component-catalog.css".into(),
-            },
-        }
-    }
-
-    fn arguments(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    #[test]
-    fn serve_command_combines_catalog_configuration_and_cli_overrides() {
-        let project = tempfile::tempdir().unwrap();
-        let catalog = CatalogProject::try_from(configuration(project.path())).unwrap();
-        let overrides = ServeArguments {
-            port: Some(3000),
-            open: Some(OpenBrowser::Yes),
-            arguments: vec!["--addr".into(), "127.0.0.1".into()],
-        };
-
-        let command = catalog.dioxus_serve_command(&overrides);
-        let actual = command
-            .arguments
-            .iter()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            actual,
-            arguments(&[
-                "serve",
-                "--web",
-                "--package",
-                "fixture-ui",
-                "--example",
-                "component-catalog",
-                "--no-default-features",
-                "--features",
-                "component-catalog",
-                "--locked",
-                "--hot-reload",
-                "true",
-                "--watch",
-                "true",
-                "--port",
-                "3000",
-                "--open",
-                "true",
-                "--addr",
-                "127.0.0.1",
-            ])
-        );
-        assert_eq!(command.current_directory, project.path().join("catalog"));
-        assert_eq!(
-            command.environment,
-            [("CARGO_INCREMENTAL", "1"), ("RUSTC_WRAPPER", "")]
-        );
-    }
-
-    #[test]
-    fn tailwind_commands_share_inputs_and_add_watch_arguments_only_for_serve() {
-        let project = tempfile::tempdir().unwrap();
-        let catalog = CatalogProject::try_from(configuration(project.path())).unwrap();
-
-        let build = catalog.tailwind_command(false);
-        let watch = catalog.tailwind_command(true);
-
-        assert!(build.arguments.ends_with(&["--minify".into()]));
-        assert!(
-            watch
-                .arguments
-                .ends_with(&["--watch=always".into(), "--poll=100".into()])
-        );
-        assert_eq!(build.arguments, watch.arguments[..build.arguments.len()]);
-    }
-
-    #[test]
-    fn source_inventory_reports_only_new_rust_files() {
-        let project = tempfile::tempdir().unwrap();
-        let configuration = configuration(project.path());
-        let catalog = CatalogProject::try_from(configuration).unwrap();
-        let before = rust_sources(&catalog.source_directories).unwrap();
-        let rust_source = catalog.catalog_path.join("dev/new_stories.rs");
-        fs::write(&rust_source, "fn stories() {}").unwrap();
-        fs::write(catalog.catalog_path.join("dev/notes.txt"), "not Rust").unwrap();
-
-        let after = rust_sources(&catalog.source_directories).unwrap();
-
-        assert_eq!(new_rust_sources(&before, &after), [rust_source]);
+        let _ = self.0.unlock();
     }
 }

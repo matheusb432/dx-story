@@ -1,4 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -12,7 +15,7 @@ pub(crate) struct Configuration {
     pub(crate) catalog: CatalogConfiguration,
     #[serde(default)]
     pub(crate) serve: ServeConfiguration,
-    pub(crate) tailwind: TailwindConfiguration,
+    pub(crate) tailwind: Option<TailwindConfiguration>,
     #[serde(skip)]
     pub(crate) root: PathBuf,
 }
@@ -20,18 +23,21 @@ pub(crate) struct Configuration {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) struct CatalogConfiguration {
-    #[serde(default = "default_catalog_path")]
-    pub(crate) path: PathBuf,
+    #[serde(default)]
+    pub(crate) path: Option<PathBuf>,
     pub(crate) package: String,
-    #[serde(default = "default_example")]
-    pub(crate) example: String,
-    #[serde(default = "default_features")]
-    pub(crate) features: Vec<String>,
+    #[serde(default)]
+    pub(crate) example: Option<String>,
+    #[serde(default)]
+    pub(crate) features: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) default_features: bool,
     #[serde(default = "default_locked")]
     pub(crate) locked: bool,
-    pub(crate) source_directories: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) source_directories: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    pub(crate) extra_source_directories: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -86,31 +92,32 @@ pub(crate) struct TailwindConfiguration {
 }
 
 impl Configuration {
-    pub(crate) fn load() -> Result<Self> {
-        Self::load_from(std::env::current_dir().context("resolve the current directory")?)
+    pub(crate) fn load(explicit: Option<&Path>) -> Result<Self> {
+        let current = std::env::current_dir().context("resolve the current directory")?;
+        let path = if let Some(path) = explicit {
+            current.join(path)
+        } else {
+            current.ancestors()
+                .map(|root| root.join(CONFIGURATION_FILE_NAME))
+                .find(|path| path.is_file())
+                .with_context(|| format!("load {CONFIGURATION_FILE_NAME}: no configuration found in {} or its parents; run dx-story init", current.display()))?
+        };
+        Self::load_file(&path)
     }
 
-    fn load_from(root: PathBuf) -> Result<Self> {
-        let path = root.join(CONFIGURATION_FILE_NAME);
+    fn load_file(path: &Path) -> Result<Self> {
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("load {}", path.display()))?;
         let source =
-            fs::read_to_string(&path).with_context(|| format!("load {CONFIGURATION_FILE_NAME}"))?;
-        let mut configuration = toml::from_str::<Self>(&source)
-            .with_context(|| format!("load {CONFIGURATION_FILE_NAME}"))?;
-        configuration.root = root;
+            fs::read_to_string(&path).with_context(|| format!("load {}", path.display()))?;
+        let mut configuration =
+            toml::from_str::<Self>(&source).with_context(|| format!("load {}", path.display()))?;
+        path.parent()
+            .context("configuration has no parent")?
+            .clone_into(&mut configuration.root);
         Ok(configuration)
     }
-}
-
-fn default_catalog_path() -> PathBuf {
-    PathBuf::from(".")
-}
-
-fn default_example() -> String {
-    "component-catalog".to_owned()
-}
-
-fn default_features() -> Vec<String> {
-    vec!["component-catalog".to_owned()]
 }
 
 const fn default_locked() -> bool {
@@ -142,11 +149,12 @@ output = "assets/component-catalog.css"
         )
         .unwrap();
 
-        let configuration = Configuration::load_from(project.path().to_owned()).unwrap();
+        let configuration =
+            Configuration::load_file(&project.path().join(CONFIGURATION_FILE_NAME)).unwrap();
 
-        assert_eq!(configuration.catalog.path, PathBuf::from("."));
-        assert_eq!(configuration.catalog.example, "component-catalog");
-        assert_eq!(configuration.catalog.features, ["component-catalog"]);
+        assert!(configuration.catalog.path.is_none());
+        assert!(configuration.catalog.example.is_none());
+        assert!(configuration.catalog.features.is_none());
         assert!(!configuration.catalog.default_features);
         assert!(configuration.catalog.locked);
         assert_eq!(configuration.serve.port, 8080);
@@ -173,7 +181,8 @@ output = "assets/component-catalog.css"
         )
         .unwrap();
 
-        let configuration = Configuration::load_from(project.path().to_owned()).unwrap();
+        let configuration =
+            Configuration::load_file(&project.path().join(CONFIGURATION_FILE_NAME)).unwrap();
 
         assert_eq!(configuration.serve.open, OpenBrowser::Yes);
     }

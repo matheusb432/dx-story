@@ -1,0 +1,10 @@
+use dioxus::prelude::*;
+use dx_story::catalog::{Catalog, CatalogConfig};
+
+#[path = "stories.rs"]
+mod stories;
+
+#[component]
+pub(super) fn App() -> Element {
+    rsx! { Catalog { config: CatalogConfig::default() } }
+}

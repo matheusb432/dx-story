@@ -34,3 +34,7 @@ dioxus = { workspace = true, features = ["lib"] }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "component-catalog"
+required-features = ["catalog"]

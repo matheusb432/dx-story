@@ -1,0 +1,13 @@
+use dioxus::prelude::*;
+use dx_story::{stories, story};
+
+#[story]
+fn interactive() -> Element {
+    let mut count = use_signal(|| 0_u32);
+    rsx! {
+        button { onclick: move |_| count += 1, "Clicked {count} times" }
+    }
+}
+
+#[stories(id = "example", name = "Example")]
+const EXAMPLE_STORIES: () = &[interactive];
