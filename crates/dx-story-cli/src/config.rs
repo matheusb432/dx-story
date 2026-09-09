@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Deserialize;
 
-const CONFIGURATION_FILE_NAME: &str = "dx-story.toml";
+pub(crate) const CONFIGURATION_FILE_NAME: &str = "dx-story.toml";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

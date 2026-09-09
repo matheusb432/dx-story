@@ -8,7 +8,10 @@ use cargo_metadata::{CargoOpt, MetadataCommand};
 use clap::Args;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value, value};
 
-use crate::project::select_package;
+use crate::{
+    config::CONFIGURATION_FILE_NAME,
+    project::{package_root, select_package},
+};
 
 #[derive(Args)]
 pub(crate) struct InitArguments {
@@ -38,20 +41,17 @@ pub(crate) fn run(arguments: &InitArguments, configuration: Option<&Path>) -> Re
         .exec()
         .context("read workspace for initialization")?;
     let package = select_package(&metadata, &arguments.package)?;
-    let root = package
-        .manifest_path
-        .parent()
-        .context("package manifest has no parent")?
-        .as_std_path();
-    let configuration = configuration.map_or_else(
+    let root = package_root(package)?;
+    let configuration = std::path::absolute(configuration.map_or_else(
         || {
             metadata
                 .workspace_root
-                .join("dx-story.toml")
+                .join(CONFIGURATION_FILE_NAME)
                 .into_std_path_buf()
         },
         Path::to_owned,
-    );
+    ))
+    .context("resolve the configuration path")?;
     let library_path = arguments
         .library_path
         .clone()
@@ -73,8 +73,9 @@ pub(crate) fn run(arguments: &InitArguments, configuration: Option<&Path>) -> Re
     let mut settings = DocumentMut::new();
     settings["catalog"]["package"] = value(arguments.package.as_str());
     if configuration.parent() != Some(metadata.workspace_root.as_std_path()) {
-        let absolute = std::path::absolute(&configuration)?;
-        let directory = absolute.parent().context("configuration has no parent")?;
+        let directory = configuration
+            .parent()
+            .context("configuration has no parent")?;
         settings["catalog"]["path"] =
             value(relative_path(directory, root)?.to_string_lossy().as_ref());
     }
@@ -235,8 +236,11 @@ fn embedded_main(
         &root.join("dev/catalog.rs"),
     )?;
     let contents = format!(
-        "{source}\n#[cfg(feature = \"component-catalog\")]\n#[path = {:?}]\nmod component_catalog;\n\n#[cfg(feature = \"component-catalog\")]\n/// Validates the story registry and launches the catalog.\n///\n/// # Errors\n///\n/// Returns a registry error for duplicate or empty story sets.\npub fn launch_component_catalog() -> Result<(), dx_story::RegistryError> {{\n    dx_story::launch(component_catalog::App)\n}}\n",
-        module_path.to_string_lossy()
+        "{source}\n{}",
+        include_str!("init/embedded_library.rs.txt").replace(
+            "{module_path}",
+            &format!("{:?}", module_path.to_string_lossy())
+        )
     );
     changes.push(FileChange {
         path: library_path.to_owned(),
@@ -248,10 +252,8 @@ fn embedded_main(
         previous: None,
         contents: include_str!("init/catalog.rs.txt").to_owned(),
     });
-    Ok(format!(
-        "fn main() -> Result<(), dx_story::RegistryError> {{\n    {}::launch_component_catalog()\n}}\n",
-        library.name.replace('-', "_")
-    ))
+    Ok(include_str!("init/embedded_main.rs.txt")
+        .replace("{crate_name}", &library.name.replace('-', "_")))
 }
 
 fn apply(changes: &[FileChange], dry_run: bool) -> Result<()> {

@@ -21,6 +21,37 @@ use crate::{
     project::CatalogProject,
 };
 
+/// A full recursive walk of every watched directory is far too costly to run at the
+/// supervision poll interval, so the source inventory keeps its own cadence.
+const SOURCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
+/// Readiness is user-visible in seconds, and every probe costs the building server a request.
+const READY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Rate-limits loop work that is far more expensive than the supervision poll.
+struct Cadence {
+    interval: Duration,
+    next: Instant,
+}
+
+impl Cadence {
+    /// Starts one interval out, so the work is not repeated on the tick that follows it.
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            next: Instant::now() + interval,
+        }
+    }
+
+    fn due(&mut self) -> bool {
+        let now = Instant::now();
+        if now < self.next {
+            return false;
+        }
+        self.next = now + self.interval;
+        true
+    }
+}
+
 #[derive(Args, Debug)]
 pub(crate) struct ServeArguments {
     /// Port to serve on (configuration default: 8080).
@@ -74,14 +105,13 @@ pub(crate) fn run(project: &CatalogProject, arguments: &ServeArguments) -> Resul
             .map(|mut command| ManagedProcess::spawn(&mut command, "Tailwind watcher"))
             .transpose()?
     };
-    let mut known_sources = if arguments.no_watch {
-        BTreeSet::new()
-    } else {
-        rust_sources(project.source_directories())?
-    };
-    let mut server = spawn_server(project, arguments)?;
+    let mut known_sources =
+        changed_sources(project, arguments, &BTreeSet::new())?.unwrap_or_default();
+    let mut server = spawn_server(project, arguments, address)?;
     let mut deadline = Instant::now() + Duration::from_secs(arguments.ready_timeout);
     let mut ready = false;
+    let mut probe = Cadence::new(READY_PROBE_INTERVAL);
+    let mut scan = Cadence::new(SOURCE_SCAN_INTERVAL);
     loop {
         if process::stopping() {
             return Ok(());
@@ -96,24 +126,33 @@ pub(crate) fn run(project: &CatalogProject, arguments: &ServeArguments) -> Resul
             );
             return Ok(());
         }
-        if !ready {
+        if !ready && probe.due() {
             ready = poll_ready(address, deadline, arguments)?;
         }
-        if let Some(sources) = changed_sources(project, arguments, &known_sources)? {
+        if scan.due()
+            && let Some(sources) = changed_sources(project, arguments, &known_sources)?
+        {
             known_sources = sources;
             eprintln!("dx-story: restarting Dioxus after Rust source files were added or removed");
             server.stop()?;
-            server = spawn_server(project, arguments)?;
+            server = spawn_server(project, arguments, address)?;
             deadline = Instant::now() + Duration::from_secs(arguments.ready_timeout);
             ready = false;
+            probe = Cadence::new(READY_PROBE_INTERVAL);
         }
         thread::sleep(POLL_INTERVAL);
     }
 }
 
-fn spawn_server(project: &CatalogProject, arguments: &ServeArguments) -> Result<ManagedProcess> {
-    let mut server =
-        ManagedProcess::spawn(&mut dioxus_command(project, arguments), "Dioxus server")?;
+fn spawn_server(
+    project: &CatalogProject,
+    arguments: &ServeArguments,
+    address: SocketAddrV4,
+) -> Result<ManagedProcess> {
+    let mut server = ManagedProcess::spawn(
+        &mut dioxus_command(project, arguments, address),
+        "Dioxus server",
+    )?;
     if !arguments.non_interactive && !arguments.ready_json && std::io::stdin().is_terminal() {
         server.take_terminal()?;
     }
@@ -156,24 +195,25 @@ fn poll_ready(
 }
 
 fn validate_forwarded_arguments(arguments: &ServeArguments) -> Result<()> {
-    if arguments.ready_json || arguments.no_watch {
-        for argument in &arguments.arguments {
-            let value = argument.to_string_lossy();
-            let flag = value.split('=').next().unwrap_or_default();
-            ensure!(
-                !matches!(
-                    flag,
-                    "--port"
-                        | "-p"
-                        | "--addr"
-                        | "--watch"
-                        | "--hot-reload"
-                        | "--interactive"
-                        | "--open"
-                ),
-                "{flag} cannot be forwarded with --ready-json or --no-watch; use dx-story's serve options"
-            );
-        }
+    if !arguments.ready_json && !arguments.no_watch {
+        return Ok(());
+    }
+    for argument in &arguments.arguments {
+        let value = argument.to_string_lossy();
+        let flag = value.split_once('=').map_or(&*value, |(flag, _)| flag);
+        ensure!(
+            !matches!(
+                flag,
+                "--port"
+                    | "-p"
+                    | "--addr"
+                    | "--watch"
+                    | "--hot-reload"
+                    | "--interactive"
+                    | "--open"
+            ),
+            "{flag} cannot be forwarded with --ready-json or --no-watch; use dx-story's serve options"
+        );
     }
     Ok(())
 }
@@ -194,43 +234,50 @@ fn build_styles_unlocked(project: &CatalogProject) -> Result<()> {
     Ok(())
 }
 
-fn tailwind_command(project: &CatalogProject, watch: bool) -> Option<Command> {
-    let tailwind = project.tailwind()?;
+/// The Deno invocation of the Tailwind CLI that both the stylesheet build and the
+/// doctor's availability probe start from.
+pub(crate) fn tailwind_cli(project: &CatalogProject) -> Command {
     let mut command = Command::new("deno");
     command
-        .args([
-            "run",
-            "--frozen",
-            "--allow-all",
-            "@tailwindcss/cli",
-            "--input",
-        ])
+        .args(["run", "--frozen", "--allow-all", "@tailwindcss/cli"])
+        .current_dir(project.path());
+    command
+}
+
+fn tailwind_command(project: &CatalogProject, watch: bool) -> Option<Command> {
+    let tailwind = project.tailwind()?;
+    let mut command = tailwind_cli(project);
+    command
+        .arg("--input")
         .arg(&tailwind.input)
         .arg("--output")
         .arg(&tailwind.output)
         .arg("--minify")
-        .current_dir(project.path())
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
+        .stdout(std::io::stderr())
         .stderr(Stdio::inherit());
     if watch {
         command.args(["--watch=always", "--poll=100"]);
     }
-    command.stdout(std::io::stderr());
     Some(command)
 }
 
-fn dioxus_command(project: &CatalogProject, overrides: &ServeArguments) -> Command {
+fn dioxus_command(
+    project: &CatalogProject,
+    overrides: &ServeArguments,
+    address: SocketAddrV4,
+) -> Command {
     let mut command = Command::new("dx");
+    let watch = (!overrides.no_watch).to_string();
     command.arg("serve").args(project.target_arguments()).args([
         "--hot-reload",
-        &(!overrides.no_watch).to_string(),
+        &watch,
         "--watch",
-        &(!overrides.no_watch).to_string(),
+        &watch,
         "--port",
-        &overrides.port.unwrap_or(project.serve().port).to_string(),
+        &address.port().to_string(),
         "--addr",
-        &overrides.addr.to_string(),
+        &address.ip().to_string(),
         "--open",
         &overrides
             .open
@@ -305,29 +352,22 @@ fn catalog_responds(mut address: SocketAddrV4) -> bool {
     if address.ip().is_unspecified() {
         address.set_ip(Ipv4Addr::LOCALHOST);
     }
-    let Ok(mut connection) = TcpStream::connect_timeout(&address.into(), POLL_INTERVAL) else {
-        return false;
-    };
+    fetch_root(address).is_ok_and(|response| {
+        (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
+            && response.contains("</html>")
+            && !response.contains("We're building your app now")
+    })
+}
+
+fn fetch_root(address: SocketAddrV4) -> std::io::Result<String> {
+    let mut connection = TcpStream::connect_timeout(&address.into(), POLL_INTERVAL)?;
     let timeout = Some(Duration::from_millis(250));
-    if connection.set_read_timeout(timeout).is_err()
-        || connection.set_write_timeout(timeout).is_err()
-    {
-        return false;
-    }
-    if connection
-        .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\nAccept: text/html\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
+    connection.set_read_timeout(timeout)?;
+    connection.set_write_timeout(timeout)?;
+    connection.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\nAccept: text/html\r\n\r\n")?;
     let mut response = String::new();
-    connection
-        .take(1024 * 1024)
-        .read_to_string(&mut response)
-        .is_ok()
-        && (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
-        && response.contains("</html>")
-        && !response.contains("We're building your app now")
+    connection.take(1024 * 1024).read_to_string(&mut response)?;
+    Ok(response)
 }
 
 struct WebAssetLock(File);

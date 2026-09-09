@@ -74,6 +74,8 @@ impl ManagedProcess {
 
     fn wait(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
+        // Back off so a command that finishes in milliseconds is not rounded up to a full poll.
+        let mut interval = Duration::from_millis(2);
         while self.try_wait()?.is_none() {
             ensure!(!stopping(), "interrupted while running {}", self.label);
             ensure!(
@@ -82,7 +84,8 @@ impl ManagedProcess {
                 self.label,
                 timeout.as_secs()
             );
-            thread::sleep(POLL_INTERVAL);
+            thread::sleep(interval);
+            interval = (interval * 2).min(POLL_INTERVAL);
         }
         let status = self.try_wait()?.context("process exit status is missing")?;
         ensure!(status.success(), "{} failed (exit {status})", self.label);

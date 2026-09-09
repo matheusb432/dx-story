@@ -1,0 +1,3 @@
+fn main() -> Result<(), dx_story::RegistryError> {
+    {crate_name}::launch_component_catalog()
+}

@@ -82,6 +82,35 @@ impl Fixture {
     fn assert_command(&self) -> Result<assert_cmd::Command> {
         Ok(assert_cmd::Command::from_std(self.command()?))
     }
+
+    /// Starts `serve --ready-json` on a free port and forwards up to `lines` stdout
+    /// lines over the returned channel.
+    fn serve(
+        &self,
+        extra: &[&str],
+        lines: usize,
+    ) -> Result<(RunningChild, mpsc::Receiver<String>, thread::JoinHandle<()>)> {
+        let port = available_port()?.to_string();
+        let mut command = self.command()?;
+        command
+            .arg("serve")
+            .args(extra)
+            .args(["--ready-json", "--port", &port])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = RunningChild(command.spawn()?);
+        let stdout = child.0.stdout.take().context("serve stdout is missing")?;
+        let (sender, receiver) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+                .take(lines)
+                .try_for_each(|line| sender.send(line))
+                .ok();
+        });
+        Ok((child, receiver, reader))
+    }
 }
 
 #[test]
@@ -210,32 +239,8 @@ fn serve_timeout_and_watcher_exit_are_failures() {
 #[test]
 fn serve_emits_ready_json_and_cleans_up_on_interrupt() {
     let fixture = Fixture::new().unwrap();
-    let mut child = RunningChild(
-        fixture
-            .command()
-            .unwrap()
-            .args([
-                "serve",
-                "--no-watch",
-                "--ready-json",
-                "--port",
-                &available_port().unwrap().to_string(),
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let stdout = child.0.stdout.take().unwrap();
-    let (sender, receiver) = mpsc::channel();
-    let reader = thread::spawn(move || {
-        sender.send(BufReader::new(stdout).lines().next()).unwrap();
-    });
-    let line = receiver
-        .recv_timeout(Duration::from_secs(15))
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let (mut child, ready, reader) = fixture.serve(&["--no-watch"], 1).unwrap();
+    let line = ready.recv_timeout(Duration::from_secs(15)).unwrap();
     let event: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["event"], "ready");
     let arguments = fs::read_to_string(fixture.0.path().join("arguments")).unwrap();
@@ -335,49 +340,13 @@ fn response_body(requests: usize) -> &'static str {
 #[test]
 fn source_additions_and_removals_restart_the_supervised_server() {
     let fixture = Fixture::new().unwrap();
-    let mut child = RunningChild(
-        fixture
-            .command()
-            .unwrap()
-            .args([
-                "serve",
-                "--ready-json",
-                "--port",
-                &available_port().unwrap().to_string(),
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let stdout = child.0.stdout.take().unwrap();
-    let (sender, receiver) = mpsc::channel();
-    let reader = thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().take(3) {
-            let _ = sender.send(line);
-        }
-    });
-    let first = receiver
-        .recv_timeout(Duration::from_secs(15))
-        .unwrap()
-        .unwrap();
+    let (child, ready, reader) = fixture.serve(&[], 3).unwrap();
+    let first = ready.recv_timeout(Duration::from_secs(15)).unwrap();
     assert!(first.contains("\"event\":\"ready\""));
     fixture.write("ui/src/new_story.rs", "").unwrap();
-    assert_eq!(
-        receiver
-            .recv_timeout(Duration::from_secs(15))
-            .unwrap()
-            .unwrap(),
-        first
-    );
+    assert_eq!(ready.recv_timeout(Duration::from_secs(15)).unwrap(), first);
     fs::remove_file(fixture.0.path().join("ui/src/new_story.rs")).unwrap();
-    assert_eq!(
-        receiver
-            .recv_timeout(Duration::from_secs(15))
-            .unwrap()
-            .unwrap(),
-        first
-    );
+    assert_eq!(ready.recv_timeout(Duration::from_secs(15)).unwrap(), first);
     drop(child);
     reader.join().unwrap();
 }

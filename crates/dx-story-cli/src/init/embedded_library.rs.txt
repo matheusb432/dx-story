@@ -1,0 +1,13 @@
+#[cfg(feature = "component-catalog")]
+#[path = {module_path}]
+mod component_catalog;
+
+#[cfg(feature = "component-catalog")]
+/// Validates the story registry and launches the catalog.
+///
+/// # Errors
+///
+/// Returns a registry error for duplicate or empty story sets.
+pub fn launch_component_catalog() -> Result<(), dx_story::RegistryError> {
+    dx_story::launch(component_catalog::App)
+}
