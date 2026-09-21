@@ -15,6 +15,10 @@ bootstrap *args:
 setup *args:
     cargo fetch {{ args }}
 
+[group('setup')]
+update:
+    cargo install --path crates/dx-story-cli --locked --force
+
 [group('quality')]
 fmt:
     cargo fmt --all
