@@ -3,7 +3,7 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 use cargo_metadata::semver::Version;
 
-use crate::{process, project::CatalogProject, serve};
+use crate::{process, project::CatalogProject, styles};
 
 pub(crate) fn check(project: &CatalogProject) -> Result<()> {
     let version = process::capture(
@@ -12,15 +12,21 @@ pub(crate) fn check(project: &CatalogProject) -> Result<()> {
             .current_dir(project.path()),
         "Dioxus CLI",
     )
-    .context("provision the project's dioxus-cli version")?;
+    .with_context(|| {
+        format!(
+            "install Dioxus CLI with: cargo install dioxus-cli --version {} --locked",
+            project.dioxus_version()
+        )
+    })?;
     let actual = version
         .split_whitespace()
         .find(|part| part.as_bytes().first().is_some_and(u8::is_ascii_digit))
         .and_then(|part| Version::parse(part).ok());
     ensure!(
         actual.as_ref() == Some(project.dioxus_version()),
-        "Dioxus CLI version does not match the catalog: got {}, need {}",
+        "Dioxus CLI version does not match the catalog: got {}, need {}; install with: cargo install dioxus-cli --version {} --locked",
         version.trim(),
+        project.dioxus_version(),
         project.dioxus_version()
     );
     let targets = process::capture(
@@ -33,10 +39,10 @@ pub(crate) fn check(project: &CatalogProject) -> Result<()> {
         targets
             .lines()
             .any(|target| target == "wasm32-unknown-unknown"),
-        "missing wasm32-unknown-unknown; add it to the project's Rust toolchain"
+        "missing wasm32-unknown-unknown; run: rustup target add wasm32-unknown-unknown"
     );
     if project.tailwind().is_some() {
-        process::capture(serve::tailwind_cli(project).arg("--help"), "Deno/Tailwind")
+        process::capture(styles::tailwind_cli(project).arg("--help"), "Deno/Tailwind")
             .context("check deno.json imports and deno.lock")?;
     }
     Ok(())

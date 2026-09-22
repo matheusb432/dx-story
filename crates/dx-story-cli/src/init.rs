@@ -14,6 +14,9 @@ use crate::{
 };
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  dx-story init --package my-ui\n  dx-story init --package my-ui --embedded --dry-run\n  dx-story init --package my-ui --library-path ../dx-story/crates/dx-story"
+)]
 pub(crate) struct InitArguments {
     /// Workspace package that owns the components.
     #[arg(short, long)]
@@ -21,7 +24,7 @@ pub(crate) struct InitArguments {
     /// Put stories inside the library to access crate-private components.
     #[arg(long)]
     embedded: bool,
-    /// Local dx-story library crate (defaults to this CLI's sibling crate).
+    /// Use a local dx-story library crate instead of crates.io.
     #[arg(long)]
     library_path: Option<PathBuf>,
     /// Print all proposed file contents without writing files.
@@ -33,6 +36,64 @@ struct FileChange {
     path: PathBuf,
     previous: Option<String>,
     contents: String,
+}
+
+enum LibrarySource {
+    Registry,
+    Local {
+        path: PathBuf,
+        dioxus_requirement: String,
+    },
+}
+
+impl LibrarySource {
+    fn resolve(path: Option<&Path>) -> Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self::Registry);
+        };
+        let path = path.canonicalize().context("resolve --library-path")?;
+        let metadata = MetadataCommand::new()
+            .manifest_path(path.join("Cargo.toml"))
+            .no_deps()
+            .exec()
+            .context("read local dx-story manifest")?;
+        let library = select_package(&metadata, "dx-story")?;
+        let dioxus = library
+            .dependencies
+            .iter()
+            .find(|dependency| dependency.name == "dioxus")
+            .context("dx-story has no dioxus dependency")?;
+        Ok(Self::Local {
+            path: package_root(library)?.to_owned(),
+            dioxus_requirement: dioxus.req.to_string(),
+        })
+    }
+
+    fn dioxus_requirement(&self) -> &str {
+        match self {
+            Self::Registry => "0.7.10",
+            Self::Local {
+                dioxus_requirement, ..
+            } => dioxus_requirement,
+        }
+    }
+
+    fn dependency(&self, root: &Path) -> Result<InlineTable> {
+        let mut dependency = InlineTable::new();
+        match self {
+            Self::Registry => {
+                dependency.insert("version", Value::from(env!("CARGO_PKG_VERSION")));
+            }
+            Self::Local { path, .. } => {
+                dependency.insert(
+                    "path",
+                    Value::from(relative_path(root, path)?.to_string_lossy().as_ref()),
+                );
+            }
+        }
+        dependency.insert("optional", Value::from(true));
+        Ok(dependency)
+    }
 }
 
 pub(crate) fn run(arguments: &InitArguments, configuration: Option<&Path>) -> Result<()> {
@@ -52,24 +113,7 @@ pub(crate) fn run(arguments: &InitArguments, configuration: Option<&Path>) -> Re
         Path::to_owned,
     ))
     .context("resolve the configuration path")?;
-    let library_path = arguments
-        .library_path
-        .clone()
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../dx-story"));
-    let library_path = library_path
-        .canonicalize()
-        .context("resolve local dx-story library; use --library-path")?;
-    let library_metadata = MetadataCommand::new()
-        .manifest_path(library_path.join("Cargo.toml"))
-        .no_deps()
-        .exec()
-        .context("read local dx-story manifest")?;
-    let library = select_package(&library_metadata, "dx-story")?;
-    let dioxus = library
-        .dependencies
-        .iter()
-        .find(|dependency| dependency.name == "dioxus")
-        .context("dx-story has no dioxus dependency")?;
+    let library = LibrarySource::resolve(arguments.library_path.as_deref())?;
     let mut settings = DocumentMut::new();
     settings["catalog"]["package"] = value(arguments.package.as_str());
     if configuration.parent() != Some(metadata.workspace_root.as_std_path()) {
@@ -80,7 +124,7 @@ pub(crate) fn run(arguments: &InitArguments, configuration: Option<&Path>) -> Re
             value(relative_path(directory, root)?.to_string_lossy().as_ref());
     }
     let mut changes = vec![
-        manifest_change(package, root, &library_path, &dioxus.req.to_string())?,
+        manifest_change(package, root, &library)?,
         FileChange {
             path: configuration,
             previous: None,
@@ -124,8 +168,7 @@ fn resolve_initialized_dependencies(package: &cargo_metadata::Package) -> Result
 fn manifest_change(
     package: &cargo_metadata::Package,
     root: &Path,
-    library_path: &Path,
-    dioxus_requirement: &str,
+    library: &LibrarySource,
 ) -> Result<FileChange> {
     let manifest_source =
         fs::read_to_string(&package.manifest_path).context("read consumer manifest")?;
@@ -151,23 +194,26 @@ fn manifest_change(
                 .any(|dependency| dependency.name == "dx-story" && dependency.target.is_some()),
         "move the target-specific dx-story dependency to [dependencies] before initialization"
     );
+    ensure!(
+        !package.dependencies.iter().any(|dependency| {
+            matches!(dependency.name.as_str(), "dx-story" | "dioxus")
+                && dependency
+                    .rename
+                    .as_deref()
+                    .is_some_and(|rename| rename != dependency.name)
+        }),
+        "initialization requires the dependency names dx-story and dioxus; configure renamed dependencies manually"
+    );
     let dependencies = manifest
         .entry("dependencies")
         .or_insert(Item::Table(Table::new()))
         .as_table_like_mut()
         .context("dependencies must be a table")?;
     if !dependencies.contains_key("dx-story") {
-        let mut dependency = InlineTable::new();
-        dependency.insert(
-            "path",
-            Value::from(
-                relative_path(root, library_path)?
-                    .to_string_lossy()
-                    .as_ref(),
-            ),
+        dependencies.insert(
+            "dx-story",
+            Item::Value(Value::InlineTable(library.dependency(root)?)),
         );
-        dependency.insert("optional", Value::from(true));
-        dependencies.insert("dx-story", Item::Value(Value::InlineTable(dependency)));
     }
     let optional = dependencies
         .get("dx-story")
@@ -177,7 +223,7 @@ fn manifest_change(
         .unwrap_or(false);
     if !dependencies.contains_key("dioxus") {
         let mut dependency = InlineTable::new();
-        dependency.insert("version", Value::from(dioxus_requirement));
+        dependency.insert("version", Value::from(library.dioxus_requirement()));
         dependency.insert("default-features", Value::from(false));
         dependencies.insert("dioxus", Item::Value(Value::InlineTable(dependency)));
     }

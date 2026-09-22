@@ -189,7 +189,99 @@ fn doctor_reports_a_dioxus_version_mismatch() {
         .arg("doctor")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("need 0.7.10"));
+        .stderr(predicate::str::contains("need 0.7.10"))
+        .stderr(predicate::str::contains(
+            "cargo install dioxus-cli --version 0.7.10 --locked",
+        ));
+}
+
+#[test]
+fn styles_without_tailwind_succeeds_without_starting_tools() {
+    let fixture = Fixture::new().unwrap();
+    fixture
+        .assert_command()
+        .unwrap()
+        .arg("styles")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no stylesheet build is needed"));
+    assert!(!fixture.0.path().join("arguments").exists());
+}
+
+#[test]
+fn build_produces_the_selected_catalog_after_styles_and_propagates_failures() {
+    let fixture = Fixture::new().unwrap();
+    fixture.write("dx-story.toml", "[catalog]\npackage='fixture-ui'\nlocked=false\n[tailwind]\ninput='dev/style.css'\noutput='assets/style.css'\n").unwrap();
+    fixture.write("ui/dev/style.css", "").unwrap();
+    fixture.script("deno", "case \"$*\" in *--help*) exit 0;; esac\nmkdir -p assets\nprintf 'styles' > assets/style.css\n").unwrap();
+    fixture.script("dx", "if [ \"$1\" = --version ]; then echo 'dioxus 0.7.10'; exit 0; fi\ntest -f assets/style.css\nprintf '%s\\n' \"$@\" > \"$DX_STORY_TEST_ROOT/arguments\"\nmkdir -p public\nprintf '<html>catalog</html>' > public/index.html\necho 'Build completed'\n").unwrap();
+    fixture
+        .assert_command()
+        .unwrap()
+        .args(["build", "--release"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Build completed"));
+    let arguments = fs::read_to_string(fixture.0.path().join("arguments")).unwrap();
+    assert!(arguments.starts_with("build\n--web\n"));
+    assert!(arguments.contains("--package\nfixture-ui\n--example\npreview\n"));
+    assert!(arguments.contains("--features\npreview\n"));
+    assert!(arguments.contains("--release\n"));
+    assert!(fixture.0.path().join("ui/public/index.html").is_file());
+    fs::remove_file(fixture.0.path().join("arguments")).unwrap();
+    fixture
+        .script(
+            "deno",
+            "case \"$*\" in *--help*) exit 0;; *) exit 7;; esac\n",
+        )
+        .unwrap();
+    fixture
+        .assert_command()
+        .unwrap()
+        .arg("build")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Tailwind build failed"));
+    assert!(!fixture.0.path().join("arguments").exists());
+    fixture
+        .write(
+            "dx-story.toml",
+            "[catalog]\npackage='fixture-ui'\nlocked=false\n",
+        )
+        .unwrap();
+    fixture
+        .script(
+            "dx",
+            "if [ \"$1\" = --version ]; then echo 'dioxus 0.7.10'; exit 0; fi\nexit 9\n",
+        )
+        .unwrap();
+    fixture
+        .assert_command()
+        .unwrap()
+        .arg("build")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Dioxus build failed"));
+}
+
+#[test]
+fn doctor_explains_how_to_install_the_wasm_target() {
+    let fixture = Fixture::new().unwrap();
+    fixture
+        .script("rustup", "echo x86_64-unknown-linux-gnu\n")
+        .unwrap();
+    fixture
+        .assert_command()
+        .unwrap()
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "rustup target add wasm32-unknown-unknown",
+        ));
+    assert!(!fixture.0.path().join("arguments").exists());
 }
 
 #[test]

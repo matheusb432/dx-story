@@ -12,7 +12,45 @@ fn help_lists_the_story_commands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("serve"))
+        .stdout(predicate::str::contains("build"))
+        .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("styles"));
+}
+
+#[test]
+fn init_help_explains_registry_and_local_setup() {
+    dx_story()
+        .args(["init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("instead of crates.io"))
+        .stdout(predicate::str::contains("--embedded"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn build_help_and_invalid_timeout_use_the_parser_without_loading_a_project() {
+    dx_story()
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--release"))
+        .stdout(predicate::str::contains("--timeout"));
+    dx_story()
+        .args(["build", "--timeout", "0"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
+fn dev_alias_uses_the_serve_help() {
+    dx_story()
+        .args(["dev", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--ready-json"));
 }
 
 #[test]

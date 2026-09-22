@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeSet,
     ffi::OsString,
-    fs::{self, File, OpenOptions},
     io::{IsTerminal, Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -19,6 +18,7 @@ use crate::{
     doctor,
     process::{self, ManagedProcess, POLL_INTERVAL},
     project::CatalogProject,
+    styles::{self, WebAssetLock},
 };
 
 /// A full recursive walk of every watched directory is far too costly to run at the
@@ -53,6 +53,9 @@ impl Cadence {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    after_help = "Examples:\n  dx-story serve --open\n  dx-story serve --port 8091\n  dx-story serve --no-watch --ready-json --open no\n  dx-story serve -- --release"
+)]
 pub(crate) struct ServeArguments {
     /// Port to serve on (configuration default: 8080).
     #[arg(short, long, value_parser = clap::value_parser!(u16).range(1..))]
@@ -97,11 +100,11 @@ pub(crate) fn run(project: &CatalogProject, arguments: &ServeArguments) -> Resul
         .tailwind()
         .map(|_| WebAssetLock::acquire(project.target_directory()))
         .transpose()?;
-    build_styles_unlocked(project)?;
+    styles::build(project)?;
     let mut watcher = if arguments.no_watch {
         None
     } else {
-        tailwind_command(project, true)
+        styles::tailwind_command(project, true)
             .map(|mut command| ManagedProcess::spawn(&mut command, "Tailwind watcher"))
             .transpose()?
     };
@@ -218,50 +221,6 @@ fn validate_forwarded_arguments(arguments: &ServeArguments) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn build_styles(project: &CatalogProject) -> Result<()> {
-    ensure!(
-        project.tailwind().is_some(),
-        "this catalog has no [tailwind] configuration; no stylesheet build is needed"
-    );
-    let _lock = WebAssetLock::acquire(project.target_directory())?;
-    build_styles_unlocked(project)
-}
-
-fn build_styles_unlocked(project: &CatalogProject) -> Result<()> {
-    if let Some(mut command) = tailwind_command(project, false) {
-        process::run(&mut command, "Tailwind build", Duration::from_secs(120))?;
-    }
-    Ok(())
-}
-
-/// The Deno invocation of the Tailwind CLI that both the stylesheet build and the
-/// doctor's availability probe start from.
-pub(crate) fn tailwind_cli(project: &CatalogProject) -> Command {
-    let mut command = Command::new("deno");
-    command
-        .args(["run", "--frozen", "--allow-all", "@tailwindcss/cli"])
-        .current_dir(project.path());
-    command
-}
-
-fn tailwind_command(project: &CatalogProject, watch: bool) -> Option<Command> {
-    let tailwind = project.tailwind()?;
-    let mut command = tailwind_cli(project);
-    command
-        .arg("--input")
-        .arg(&tailwind.input)
-        .arg("--output")
-        .arg(&tailwind.output)
-        .arg("--minify")
-        .stdin(Stdio::null())
-        .stdout(std::io::stderr())
-        .stderr(Stdio::inherit());
-    if watch {
-        command.args(["--watch=always", "--poll=100"]);
-    }
-    Some(command)
-}
-
 fn dioxus_command(
     project: &CatalogProject,
     overrides: &ServeArguments,
@@ -368,44 +327,4 @@ fn fetch_root(address: SocketAddrV4) -> std::io::Result<String> {
     let mut response = String::new();
     connection.take(1024 * 1024).read_to_string(&mut response)?;
     Ok(response)
-}
-
-struct WebAssetLock(File);
-
-impl WebAssetLock {
-    fn acquire(target: &Path) -> Result<Self> {
-        fs::create_dir_all(target).context("create Cargo target directory")?;
-        let path = target.join("web-assets.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .context("open web asset lock")?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !try_asset_lock(&file)? {
-            ensure!(
-                !process::stopping() && Instant::now() < deadline,
-                "web assets are busy; stop the other preview server or stylesheet build ({})",
-                path.display()
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
-        Ok(Self(file))
-    }
-}
-
-fn try_asset_lock(file: &File) -> Result<bool> {
-    match file.try_lock() {
-        Ok(()) => Ok(true),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
-        Err(error) => Err(error).context("lock web assets"),
-    }
-}
-
-impl Drop for WebAssetLock {
-    fn drop(&mut self) {
-        let _ = self.0.unlock();
-    }
 }

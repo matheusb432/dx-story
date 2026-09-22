@@ -17,7 +17,11 @@ fn dry_run_and_conflicts_preserve_existing_files() {
         .assert()
         .success()
         .stdout(predicate::str::contains("# Keep this comment."))
-        .stdout(predicate::str::contains("dev/stories.rs"));
+        .stdout(predicate::str::contains("dev/stories.rs"))
+        .stdout(predicate::str::contains(
+            "dx-story = { version = \"0.1.0\", optional = true }",
+        ))
+        .stdout(predicate::str::contains("dx-story = { path").not());
     assert_eq!(
         fs::read_to_string(project.path().join("Cargo.toml")).unwrap(),
         manifest
@@ -57,7 +61,8 @@ fn generated_public_and_embedded_catalogs_compile() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_dx-story"));
         command
             .current_dir(project.path())
-            .args(["init", "--package", "starter"]);
+            .args(["init", "--package", "starter", "--library-path"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../dx-story"));
         if embedded {
             command.arg("--embedded");
         }
