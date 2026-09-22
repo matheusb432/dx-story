@@ -3,10 +3,19 @@ name = "dx-story"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Dioxus component story registry and catalog."
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
+readme = "../../README.md"
+documentation = "https://docs.rs/dx-story"
+keywords = ["dioxus", "storybook", "components", "catalog", "ui"]
+categories = ["gui", "development-tools", "web-programming"]
+include = ["src/**", "examples/**", "tests/**", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = []
@@ -24,7 +33,7 @@ csr = ["dep:web-sys", "dioxus/launch", "dioxus/web"]
 [dependencies]
 const_format.workspace = true
 dioxus = { workspace = true, features = ["html", "macro"] }
-dx-story-macros = { path = "../dx-story-macros" }
+dx-story-macros.workspace = true
 inventory.workspace = true
 pulldown-cmark = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Location"], optional = true }

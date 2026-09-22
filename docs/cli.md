@@ -127,7 +127,7 @@ for a debug build. `--timeout` bounds the Dioxus build in seconds (default 600).
 Child output goes to stderr; build failures exit nonzero.
 
 Dioxus reports the output directory, normally
-`target/dx/<package>/<debug-or-release>/web/public`. Serve the complete directory
+`target/dx/<example>/<debug-or-release>/web/public`. Serve the complete directory
 through an HTTP server. The catalog uses browser routes; configure the host to
 serve `index.html` for unknown routes, including `/stories/...` and `/render/...`.
 Opening the HTML as a local file is not supported. Hosting and deployment remain

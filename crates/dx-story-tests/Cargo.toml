@@ -1,0 +1,13 @@
+[package]
+name = "dx-story-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+dioxus = { workspace = true, features = ["lib"] }
+facade = { package = "dx-story", path = "../dx-story" }
+trybuild.workspace = true
+
+[lints]
+workspace = true

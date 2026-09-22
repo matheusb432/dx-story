@@ -3,14 +3,20 @@ name = "dx-story-cli"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Development commands for dx-story catalogs."
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
+readme = "../../docs/cli.md"
+keywords = ["dioxus", "storybook", "components", "catalog", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["src/**", "tests/**", "LICENSE"]
 
 [[bin]]
 name = "dx-story"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 anyhow.workspace = true

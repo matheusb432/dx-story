@@ -1254,13 +1254,19 @@ dependencies = [
 name = "dx-story-macros"
 version = "0.1.0"
 dependencies = [
- "dioxus",
- "dx-story",
  "prettyplease",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 3.0.4",
+]
+
+[[package]]
+name = "dx-story-tests"
+version = "0.1.0"
+dependencies = [
+ "dioxus",
+ "dx-story",
  "trybuild",
 ]
 

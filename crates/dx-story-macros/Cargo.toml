@@ -3,10 +3,16 @@ name = "dx-story-macros"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Procedural macros for dx-story."
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/dx-story"
+keywords = ["dioxus", "storybook", "macros"]
+categories = ["development-tools::procedural-macro-helpers", "gui"]
+include = ["src/**", "LICENSE", "README.md"]
 
 [lib]
 proc-macro = true
@@ -17,11 +23,6 @@ proc-macro-crate.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
-
-[dev-dependencies]
-dioxus = { workspace = true, features = ["lib"] }
-facade = { package = "dx-story", path = "../dx-story" }
-trybuild.workspace = true
 
 [lints]
 workspace = true

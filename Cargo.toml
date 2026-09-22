@@ -1,12 +1,18 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
+default-members = [
+  "crates/dx-story",
+  "crates/dx-story-cli",
+  "crates/dx-story-macros",
+]
 
 [workspace.package]
 authors = ["Matheus Bastos <matheus.mab432@gmail.com>"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/matheusb432/dx-story"
+rust-version = "1.98"
 version = "0.1.0"
 publish = false
 
@@ -20,6 +26,7 @@ command-group = "5.0.1"
 const_format = "0.2.36"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 dioxus = { version = "0.7.10", default-features = false }
+dx-story-macros = { version = "=0.1.0", path = "crates/dx-story-macros" }
 inventory = "0.3.24"
 nix = { version = "0.31.3", features = ["process", "signal", "term"] }
 predicates = "3"
