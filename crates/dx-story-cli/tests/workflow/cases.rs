@@ -229,6 +229,7 @@ fn build_produces_the_selected_catalog_after_styles_and_propagates_failures() {
     assert!(arguments.contains("--package\nfixture-ui\n--example\npreview\n"));
     assert!(arguments.contains("--features\npreview\n"));
     assert!(arguments.contains("--release\n"));
+    assert!(arguments.contains("--debug-symbols\nfalse\n"));
     assert!(fixture.0.path().join("ui/public/index.html").is_file());
     fs::remove_file(fixture.0.path().join("arguments")).unwrap();
     fixture

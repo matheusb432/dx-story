@@ -122,8 +122,10 @@ dx-story build --release
 
 `build` validates the selected target and toolchain, builds optional styles,
 then runs `dx build` with the same package, example, features, and lockfile policy
-as `serve`. It holds the stylesheet lock until Dioxus finishes. Omit `--release`
-for a debug build. `--timeout` bounds the Dioxus build in seconds (default 600).
+as `serve`. It holds the stylesheet lock until Dioxus finishes. Release builds
+omit Wasm debug symbols so the bundle can be optimized for distribution. Omit
+`--release` for a debug build. `--timeout` bounds the Dioxus build in seconds
+(default 600).
 Child output goes to stderr; build failures exit nonzero.
 
 Dioxus reports the output directory, normally

@@ -42,7 +42,7 @@ pub(crate) fn run(project: &CatalogProject, arguments: &BuildArguments) -> Resul
         .env("CARGO_INCREMENTAL", "0")
         .env("RUSTC_WRAPPER", "");
     if arguments.release {
-        command.arg("--release");
+        command.args(["--release", "--debug-symbols", "false"]);
     }
     process::run(
         &mut command,
