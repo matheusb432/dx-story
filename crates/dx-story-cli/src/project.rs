@@ -180,10 +180,14 @@ fn validate_tailwind(path: &Path, tailwind: Option<&TailwindConfiguration>) -> R
         !tailwind.output.as_os_str().is_empty(),
         "Tailwind output must not be empty"
     );
-    ensure!(
-        input != path.join(&tailwind.output),
-        "Tailwind input and output must differ"
-    );
+    let output = path.join(&tailwind.output);
+    if output.exists() {
+        ensure!(
+            input.canonicalize().context("resolve Tailwind input")?
+                != output.canonicalize().context("resolve Tailwind output")?,
+            "Tailwind input and output must differ"
+        );
+    }
     Ok(())
 }
 
@@ -334,4 +338,39 @@ fn normalize_directories(directories: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         "catalog must have between 1 and 64 watched source directories"
     );
     Ok(minimal)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn tailwind_output_cannot_resolve_to_its_input() {
+        let project = tempfile::tempdir().unwrap();
+        let styles = project.path().join("dev");
+        fs::create_dir(&styles).unwrap();
+        fs::write(styles.join("style.css"), "@import 'tailwindcss';").unwrap();
+
+        for output in ["dev/style.css", "dev/../dev/style.css"] {
+            let configuration = TailwindConfiguration {
+                input: PathBuf::from("dev/style.css"),
+                output: PathBuf::from(output),
+            };
+            let error = validate_tailwind(project.path(), Some(&configuration)).unwrap_err();
+            assert!(error.to_string().contains("input and output must differ"));
+        }
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(styles.join("style.css"), styles.join("alias.css")).unwrap();
+            let configuration = TailwindConfiguration {
+                input: PathBuf::from("dev/style.css"),
+                output: PathBuf::from("dev/alias.css"),
+            };
+            let error = validate_tailwind(project.path(), Some(&configuration)).unwrap_err();
+            assert!(error.to_string().contains("input and output must differ"));
+        }
+    }
 }
