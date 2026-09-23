@@ -7,6 +7,10 @@ The `dx-story` library provides the registry and catalog. The optional `dx-story
 catalog in an existing Cargo package and runs it with Dioxus. This project requires Rust 1.98 or
 newer and Dioxus 0.7.10 or newer within the 0.7 series.
 
+## Preview
+
+![The component catalog with an interactive DataTable story open](docs/images/component-catalog.png)
+
 ## Getting started
 
 From a Cargo workspace containing your components:
