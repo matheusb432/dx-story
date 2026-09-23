@@ -13,6 +13,7 @@ rust = { version = "stable", profile = "minimal", components = [
 ] }
 just = "1.56.0"
 taplo = "0.10.0"
+rumdl = "0.2.41"
 "cargo-binstall" = "1.21.1"
 "cargo:cargo-llvm-cov" = { version = "0.8.7", depends = [
   "rust",
