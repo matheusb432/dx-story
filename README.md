@@ -8,7 +8,7 @@ up a catalog in an existing Cargo package and runs it with Dioxus.
 
 ## Preview
 
-![The component catalog with an interactive DataTable story open](docs/images/component-catalog.png)
+![The component catalog with an interactive DataTable story open](https://raw.githubusercontent.com/matheusb432/dx-story/main/docs/images/component-catalog.png)
 
 ## References
 
