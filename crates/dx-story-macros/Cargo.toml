@@ -8,11 +8,10 @@ description = "Procedural macros for dx-story."
 license.workspace = true
 repository.workspace = true
 publish = ["crates-io"]
-readme = "README.md"
 documentation = "https://docs.rs/dx-story"
 keywords = ["dioxus", "storybook", "macros"]
 categories = ["development-tools::procedural-macro-helpers", "gui"]
-include = ["src/**", "LICENSE", "README.md"]
+include = ["src/**", "LICENSE"]
 
 [lib]
 proc-macro = true
