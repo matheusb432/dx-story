@@ -184,6 +184,17 @@ fn doctor_reports_a_dioxus_version_mismatch() {
     let fixture = Fixture::new().unwrap();
     fixture.script("dx", "echo 'dioxus 0.6.0'\n").unwrap();
     fixture
+        .script("rustup", "echo x86_64-unknown-linux-gnu\n")
+        .unwrap();
+    fixture
+        .write(
+            "dx-story.toml",
+            "[catalog]\npackage='fixture-ui'\nlocked=false\n[tailwind]\ninput='dev/style.css'\noutput='assets/style.css'\n",
+        )
+        .unwrap();
+    fixture.write("ui/dev/style.css", "").unwrap();
+    fixture.script("deno", "exit 9\n").unwrap();
+    fixture
         .assert_command()
         .unwrap()
         .arg("doctor")
@@ -192,6 +203,30 @@ fn doctor_reports_a_dioxus_version_mismatch() {
         .stderr(predicate::str::contains("need 0.7.10"))
         .stderr(predicate::str::contains(
             "cargo install dioxus-cli --version 0.7.10 --locked",
+        ))
+        .stderr(predicate::str::contains("missing wasm32").not());
+}
+
+#[test]
+fn doctor_reports_tailwind_probe_failure() {
+    let fixture = Fixture::new().unwrap();
+    fixture
+        .write(
+            "dx-story.toml",
+            "[catalog]\npackage='fixture-ui'\nlocked=false\n[tailwind]\ninput='dev/style.css'\noutput='assets/style.css'\n",
+        )
+        .unwrap();
+    fixture.write("ui/dev/style.css", "").unwrap();
+    fixture.script("deno", "exit 9\n").unwrap();
+    fixture
+        .assert_command()
+        .unwrap()
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "check deno.json imports and deno.lock",
         ));
 }
 

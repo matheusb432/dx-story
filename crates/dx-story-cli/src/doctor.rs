@@ -1,11 +1,32 @@
-use std::process::Command;
+use std::{process::Command, thread};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use cargo_metadata::semver::Version;
 
 use crate::{process, project::CatalogProject, styles};
 
 pub(crate) fn check(project: &CatalogProject) -> Result<()> {
+    let (dioxus, wasm, tailwind) = thread::scope(|scope| {
+        let dioxus = scope.spawn(|| check_dioxus_cli(project));
+        let wasm = scope.spawn(|| check_wasm_target(project));
+        let tailwind = project
+            .tailwind()
+            .map(|_| scope.spawn(|| check_tailwind(project)));
+        (
+            dioxus.join(),
+            wasm.join(),
+            tailwind.map(thread::ScopedJoinHandle::join),
+        )
+    });
+    dioxus.map_err(|_| anyhow!("Dioxus CLI probe panicked"))??;
+    wasm.map_err(|_| anyhow!("Rust target inventory probe panicked"))??;
+    if let Some(tailwind) = tailwind {
+        tailwind.map_err(|_| anyhow!("Deno/Tailwind probe panicked"))??;
+    }
+    Ok(())
+}
+
+fn check_dioxus_cli(project: &CatalogProject) -> Result<()> {
     let version = process::capture(
         Command::new("dx")
             .arg("--version")
@@ -29,6 +50,10 @@ pub(crate) fn check(project: &CatalogProject) -> Result<()> {
         project.dioxus_version(),
         project.dioxus_version()
     );
+    Ok(())
+}
+
+fn check_wasm_target(project: &CatalogProject) -> Result<()> {
     let targets = process::capture(
         Command::new("rustup")
             .args(["target", "list", "--installed"])
@@ -41,10 +66,12 @@ pub(crate) fn check(project: &CatalogProject) -> Result<()> {
             .any(|target| target == "wasm32-unknown-unknown"),
         "missing wasm32-unknown-unknown; run: rustup target add wasm32-unknown-unknown"
     );
-    if project.tailwind().is_some() {
-        process::capture(styles::tailwind_cli(project).arg("--help"), "Deno/Tailwind")
-            .context("check deno.json imports and deno.lock")?;
-    }
+    Ok(())
+}
+
+fn check_tailwind(project: &CatalogProject) -> Result<()> {
+    process::capture(styles::tailwind_cli(project).arg("--help"), "Deno/Tailwind")
+        .context("check deno.json imports and deno.lock")?;
     Ok(())
 }
 
